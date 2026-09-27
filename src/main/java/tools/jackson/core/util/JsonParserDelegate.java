@@ -1,0 +1,317 @@
+package tools.jackson.core.util;
+
+import java.io.OutputStream;
+import java.io.Writer;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+
+import tools.jackson.core.*;
+import tools.jackson.core.async.NonBlockingInputFeeder;
+import tools.jackson.core.sym.PropertyNameMatcher;
+import tools.jackson.core.type.ResolvedType;
+import tools.jackson.core.type.TypeReference;
+
+/**
+ * Helper class that implements
+ * <a href="http://en.wikipedia.org/wiki/Delegation_pattern">delegation pattern</a> for {@link JsonParser},
+ * to allow for simple overridability of basic parsing functionality.
+ * The idea is that any functionality to be modified can be simply
+ * overridden; and anything else will be delegated by default.
+ */
+public class JsonParserDelegate extends JsonParser
+{
+    /**
+     * Delegate object that method calls are delegated to.
+     */
+    protected JsonParser delegate;
+
+    public JsonParserDelegate(JsonParser d) {
+        delegate = d;
+    }
+
+    @Override public Version version() { return delegate.version(); }
+
+    // // // Public API: basic context access
+
+    @Override
+    public TokenStreamContext streamReadContext() { return delegate.streamReadContext(); }
+
+    @Override
+    public ObjectReadContext objectReadContext() { return delegate.objectReadContext(); }
+
+    // // // Public API, input source, location access
+
+    @Override public TokenStreamLocation currentTokenLocation() { return delegate.currentTokenLocation(); }
+    @Override public TokenStreamLocation currentLocation() { return delegate.currentLocation(); }
+    @Override public long currentTokenCount() { return delegate.currentTokenCount(); }
+
+    @Override public Object streamReadInputSource() { return delegate.streamReadInputSource(); }
+
+    @Override
+    public Object currentValue() {
+        return delegate.currentValue();
+    }
+
+    @Override
+    public void assignCurrentValue(Object v) {
+        delegate.assignCurrentValue(v);
+    }
+
+    /*
+    /**********************************************************************
+    /* Public API, configuration
+    /**********************************************************************
+     */
+
+    /*
+    @Override
+    public JsonParser enable(StreamReadFeature f) {
+        delegate.enable(f);
+        return this;
+    }
+
+    @Override
+    public JsonParser disable(StreamReadFeature f) {
+        delegate.disable(f);
+        return this;
+    }
+    */
+
+    @Override public boolean isEnabled(StreamReadFeature f) { return delegate.isEnabled(f); }
+    @Override public int streamReadFeatures() { return delegate.streamReadFeatures(); }
+
+    @Override public FormatSchema getSchema() { return delegate.getSchema(); }
+
+    /*
+    /**********************************************************************
+    /* Capability introspection
+    /**********************************************************************
+     */
+
+    @Override public boolean canParseAsync() { return delegate.canParseAsync(); }
+
+    @Override public boolean willInternPropertyNames() { return delegate.willInternPropertyNames(); }
+
+    @Override public NonBlockingInputFeeder nonBlockingInputFeeder() { return delegate.nonBlockingInputFeeder(); }
+
+    @Override public JacksonFeatureSet<StreamReadCapability> streamReadCapabilities() { return delegate.streamReadCapabilities(); }
+
+    @Override public StreamReadConstraints streamReadConstraints() { return delegate.streamReadConstraints(); }
+
+    /*
+    /**********************************************************************
+    /* Closeable impl
+    /**********************************************************************
+     */
+
+    @Override public void close() { delegate.close(); }
+    @Override public boolean isClosed() { return delegate.isClosed(); }
+
+    /*
+    /**********************************************************************
+    /* Public API, token accessors
+    /**********************************************************************
+     */
+
+    @Override public JsonToken currentToken() { return delegate.currentToken(); }
+    @Override public int currentTokenId() { return delegate.currentTokenId(); }
+    @Override public String currentName() { return delegate.currentName(); }
+
+    @Override public boolean hasCurrentToken() { return delegate.hasCurrentToken(); }
+    @Override public boolean hasTokenId(int id) { return delegate.hasTokenId(id); }
+    @Override public boolean hasToken(JsonToken t) { return delegate.hasToken(t); }
+
+    @Override public boolean isExpectedStartArrayToken() { return delegate.isExpectedStartArrayToken(); }
+    @Override public boolean isExpectedStartObjectToken() { return delegate.isExpectedStartObjectToken(); }
+    @Override public boolean isExpectedNumberIntToken() { return delegate.isExpectedNumberIntToken(); }
+
+    @Override public boolean isNaN() { return delegate.isNaN(); }
+
+    /*
+    /**********************************************************************
+    /* Public API, token state overrides
+    /**********************************************************************
+     */
+
+    @Override public void clearCurrentToken() { delegate.clearCurrentToken(); }
+    @Override public JsonToken getLastClearedToken() { return delegate.getLastClearedToken(); }
+    /*
+    @Override public void overrideCurrentName(String name) {
+        delegate.overrideCurrentName(name);
+    }
+    */
+
+    /*
+    /**********************************************************************
+    /* Public API, iteration over token stream
+    /**********************************************************************
+     */
+
+    @Override public JsonToken nextToken() { return delegate.nextToken(); }
+    @Override public JsonToken nextValue() { return delegate.nextValue(); }
+    @Override public void finishToken() { delegate.finishToken(); }
+
+    @Override
+    public JsonParser skipChildren() {
+        delegate.skipChildren();
+        // NOTE: must NOT delegate this method to delegate, needs to be self-reference for chaining
+        return this;
+    }
+
+    // 12-Nov-2017, tatu: These DO work as long as `JsonParserSequence` further overrides
+    //     handling
+
+    @Override public String nextName(){ return delegate.nextName(); }
+    @Override public boolean nextName(SerializableString str) { return delegate.nextName(str); }
+    @Override public int nextNameMatch(PropertyNameMatcher matcher) { return delegate.nextNameMatch(matcher); }
+    // NOTE: `nextNameMatchAndToken()` deliberately NOT overridden: default impl in
+    // `JsonParser` calls `nextNameMatch()` and `nextToken()` on this instance, so that
+    // sub-classes overriding either (but not the fused method) still get them called
+
+    // NOTE: fine without overrides since it does NOT change state
+    @Override public int currentNameMatch(PropertyNameMatcher matcher) { return delegate.currentNameMatch(matcher); }
+
+    /*
+    /**********************************************************************
+    /* Public API, access to token information, text
+    /**********************************************************************
+     */
+
+    @Override public String getString() { return delegate.getString();  }
+    @Override public boolean hasStringCharacters() { return delegate.hasStringCharacters(); }
+    @Override public char[] getStringCharacters() { return delegate.getStringCharacters(); }
+    @Override public int getStringLength() { return delegate.getStringLength(); }
+    @Override public int getStringOffset() { return delegate.getStringOffset(); }
+    @Override public int getString(Writer writer) { return delegate.getString(writer);  }
+    @Override public long readString(Writer writer) { return delegate.readString(writer);  }
+
+    /*
+    /**********************************************************************
+    /* Public API, access to token information, numeric
+    /**********************************************************************
+     */
+
+    @Override
+    public BigInteger getBigIntegerValue() { return delegate.getBigIntegerValue(); }
+
+    @Override
+    public boolean getBooleanValue() { return delegate.getBooleanValue(); }
+
+    @Override
+    public byte getByteValue() { return delegate.getByteValue(); }
+
+    @Override
+    public short getShortValue() { return delegate.getShortValue(); }
+
+    @Override
+    public BigDecimal getDecimalValue() { return delegate.getDecimalValue(); }
+
+    @Override
+    public double getDoubleValue() { return delegate.getDoubleValue(); }
+
+    @Override
+    public float getFloatValue() { return delegate.getFloatValue(); }
+
+    @Override
+    public int getIntValue() { return delegate.getIntValue(); }
+
+    @Override
+    public long getLongValue() { return delegate.getLongValue(); }
+
+    @Override
+    public NumberType getNumberType() { return delegate.getNumberType(); }
+
+    @Override
+    public NumberTypeFP getNumberTypeFP() { return delegate.getNumberTypeFP(); }
+
+    @Override
+    public Number getNumberValue() { return delegate.getNumberValue(); }
+
+    @Override
+    public Number getNumberValueExact() { return delegate.getNumberValueExact(); }
+
+    @Override
+    public Object getNumberValueDeferred() { return delegate.getNumberValueDeferred(); }
+
+    /*
+    /**********************************************************************
+    /* Public API, access to token information, coercion/conversion
+    /**********************************************************************
+     */
+
+    @Override public int getValueAsInt() { return delegate.getValueAsInt(); }
+    @Override public int getValueAsInt(int defaultValue) { return delegate.getValueAsInt(defaultValue); }
+    @Override public long getValueAsLong() { return delegate.getValueAsLong(); }
+    @Override public long getValueAsLong(long defaultValue) { return delegate.getValueAsLong(defaultValue); }
+    @Override public double getValueAsDouble() { return delegate.getValueAsDouble(); }
+    @Override public double getValueAsDouble(double defaultValue) { return delegate.getValueAsDouble(defaultValue); }
+    @Override public boolean getValueAsBoolean() { return delegate.getValueAsBoolean(); }
+    @Override public boolean getValueAsBoolean(boolean defaultValue) { return delegate.getValueAsBoolean(defaultValue); }
+    @Override public String getValueAsString(){ return delegate.getValueAsString(); }
+    @Override public String getValueAsString(String defaultValue) { return delegate.getValueAsString(defaultValue); }
+
+    /*
+    /**********************************************************************
+    /* Public API, access to token values, other
+    /**********************************************************************
+     */
+
+    @Override public Object getEmbeddedObject() { return delegate.getEmbeddedObject(); }
+    @Override public byte[] getBinaryValue(Base64Variant b64variant) { return delegate.getBinaryValue(b64variant); }
+    @Override public int readBinaryValue(Base64Variant b64variant, OutputStream out) { return delegate.readBinaryValue(b64variant, out); }
+
+    /*
+    /**********************************************************************
+    /* Public API, databind callbacks via `ObjectReadContext`
+    /**********************************************************************
+     */
+
+    // 01-Jun-2026, tatu: [core#1616] Must drive databind read through `this`
+    //    (delegate's own logical token stream), NOT the raw `delegate`: otherwise
+    //    delegates that alter the token sequence (e.g. `JsonParserSequence`,
+    //    `FilteringParserDelegate`) would have only the underlying parser read,
+    //    skipping the rest of the sequence (or bypassing filtering).
+    @Override
+    public <T> T readValueAs(Class<T> valueType) {
+        return objectReadContext().readValue(this, valueType);
+    }
+
+    @Override
+    public <T> T readValueAs(TypeReference<T> valueTypeRef) {
+        return objectReadContext().readValue(this, valueTypeRef);
+    }
+
+    @Override
+    public <T> T readValueAs(ResolvedType type) {
+        return objectReadContext().readValue(this, type);
+    }
+
+    @Override
+    public <T extends TreeNode> T readValueAsTree() {
+        return objectReadContext().readTree(this);
+    }
+
+    /*
+    /**********************************************************************
+    /* Public API, Native Ids (type, object)
+    /**********************************************************************
+     */
+
+    @Override public boolean canReadObjectId() { return delegate.canReadObjectId(); }
+    @Override public boolean canReadTypeId() { return delegate.canReadTypeId(); }
+    @Override public Object getObjectId() { return delegate.getObjectId(); }
+    @Override public Object getTypeId() { return delegate.getTypeId(); }
+
+    /*
+    /**********************************************************************
+    /* Extended API
+    /**********************************************************************
+     */
+
+    /**
+     * Accessor for getting the immediate {@link JsonParser} this parser delegates calls to.
+     *
+     * @return Underlying parser calls are delegated to
+     */
+    public JsonParser delegate() { return delegate; }
+}
