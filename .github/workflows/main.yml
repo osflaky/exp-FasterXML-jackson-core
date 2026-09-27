@@ -1,0 +1,199 @@
+name: Build and Deploy Snapshot
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - java_version: 25
+          os: macos-latest
+          arch: arm64
+          runner: macos-latest
+          expander_leg: macos-latest-25-arm64
+    env:
+      JAVA_OPTS: "-XX:+TieredCompilation -XX:TieredStopAtLevel=1"
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - name: Set up JDK (without deployment credentials)
+      if: ${{ github.event_name == 'pull_request' || github.repository != 
+        'FasterXML/jackson-core' }}
+      uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+      with:
+        distribution: ${{ matrix.distribution || 'temurin' }}
+        java-version: ${{ matrix.java_version }}
+        cache: 'maven'
+    - name: Set up JDK with deployment credentials
+      if: ${{ github.event_name != 'pull_request' && github.repository == 
+        'FasterXML/jackson-core' }}
+      uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+      with:
+        distribution: ${{ matrix.distribution || 'temurin' }}
+        java-version: ${{ matrix.java_version }}
+        cache: 'maven'
+        server-id: central-snapshots
+        server-username: CI_DEPLOY_USERNAME
+        server-password: CI_DEPLOY_PASSWORD
+        # See https://github.com/actions/setup-java/blob/v2/docs/advanced-usage.md#Publishing-using-Apache-Maven
+        # gpg-private-key: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }} # Value of the GPG private key to import
+        # gpg-passphrase: MAVEN_GPG_PASSPHRASE # env variable for GPG private key passphrase
+    - name: Build and Test
+      run: ./mvnw -B -ff -ntp verify
+    - name: Extract project Maven version
+      id: projectVersion
+      # Use bash on all platforms: Windows' default PowerShell splits
+      # `-Dexpression=project.version` at the dot and breaks the command
+      shell: bash
+      run: echo "version=$(./mvnw 
+        org.apache.maven.plugins:maven-help-plugin:3.5.1:evaluate -DforceStdout 
+        -Dexpression=project.version -q)" >>$GITHUB_OUTPUT
+    - name: Verify Android SDK Compatibility
+      if: ${{ matrix.release_build }}
+      run: ./mvnw -B -q -ff -ntp -DskipTests animal-sniffer:check
+    - name: Deploy snapshot
+      if: ${{ matrix.release_build && github.event_name != 'pull_request' && 
+        github.repository == 'FasterXML/jackson-core' && 
+        endsWith(steps.projectVersion.outputs.version, '-SNAPSHOT') }}
+      env:
+        CI_DEPLOY_USERNAME: ${{ secrets.CENTRAL_DEPLOY_USERNAME }}
+        CI_DEPLOY_PASSWORD: ${{ secrets.CENTRAL_DEPLOY_PASSWORD }}
+        # MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+      run: ./mvnw -B -q -ff -DskipTests -ntp source:jar deploy
+    - name: Generate code coverage
+      if: ${{ matrix.release_build }}
+      run: ./mvnw -B -q -ff -ntp test jacoco:report
+    - name: Publish code coverage
+      if: ${{ matrix.release_build && github.event_name != 'pull_request' && 
+        github.repository == 'FasterXML/jackson-core' }}
+      uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        files: ./target/site/jacoco/jacoco.xml
+        flags: unittests
+    - name: Upload coverage report as artifact
+      if: ${{ matrix.release_build && github.event_name != 'pull_request' && 
+        github.repository == 'FasterXML/jackson-core' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: jacoco-report
+        path: target/site/jacoco/jacoco.csv
+        retention-days: 30
+    - name: Download base branch coverage
+      if: ${{ matrix.release_build && github.event_name == 'pull_request' }}
+      uses: 
+        dawidd6/action-download-artifact@d63b86af1b34672e53c440b1b83979861906bad7     # v24
+      continue-on-error: true
+      with:
+        workflow: main.yml
+        branch: ${{ github.event.pull_request.base.ref }}
+        name: jacoco-report
+        path: base-coverage/
+    - name: Generate coverage comment
+      if: ${{ matrix.release_build && github.event_name == 'pull_request' }}
+      run: |
+        # Parse JaCoCo CSV to compute coverage percentage
+        # Columns: GROUP,PACKAGE,CLASS,INSTRUCTION_MISSED(4),INSTRUCTION_COVERED(5),BRANCH_MISSED(6),BRANCH_COVERED(7),...
+        parse_coverage() {
+          local csv_file=$1 col_missed=$2 col_covered=$3
+          awk -F',' -v m="$col_missed" -v c="$col_covered" \
+            'NR>1 && $1=="Jackson-core" {
+              total_missed += $m;
+              total_covered += $c;
+            }
+            END {
+              if (total_missed + total_covered > 0)
+                printf "%.2f", (total_covered * 100.0) / (total_missed + total_covered)
+            }' "$csv_file"
+        }
+
+        format_delta() {
+          local delta=$1
+          if awk -v d="$delta" 'BEGIN { exit (d >= 0) ? 0 : 1 }'; then
+            echo "+${delta}%|📈"
+          else
+            echo "${delta}%|📉"
+          fi
+        }
+
+        get_color() {
+          awk -v v="$1" 'BEGIN {
+            if (v >= 80) print "brightgreen"
+            else if (v >= 60) print "green"
+            else if (v >= 40) print "yellow"
+            else print "red"
+          }'
+        }
+
+        # Compute current coverage from JaCoCo CSV
+        COVERAGE=$(parse_coverage "target/site/jacoco/jacoco.csv" 4 5)
+        BRANCHES=$(parse_coverage "target/site/jacoco/jacoco.csv" 6 7)
+
+        # Check if base coverage artifact was downloaded and calculate deltas
+        HAS_DELTA=false
+        if [ -f "base-coverage/jacoco.csv" ]; then
+          echo "Found base branch coverage from artifact"
+          BASE_COVERAGE=$(parse_coverage "base-coverage/jacoco.csv" 4 5)
+          BASE_BRANCHES=$(parse_coverage "base-coverage/jacoco.csv" 6 7)
+
+          echo "DEBUG: Current coverage: ${COVERAGE}%, branches: ${BRANCHES}%"
+          echo "DEBUG: Base coverage: ${BASE_COVERAGE}%, branches: ${BASE_BRANCHES}%"
+
+          if [ -n "$BASE_COVERAGE" ] && [ -n "$BASE_BRANCHES" ]; then
+            COV_DELTA=$(awk -v curr="$COVERAGE" -v base="$BASE_COVERAGE" 'BEGIN { printf "%.3f", curr - base }')
+            BR_DELTA=$(awk -v curr="$BRANCHES" -v base="$BASE_BRANCHES" 'BEGIN { printf "%.3f", curr - base }')
+
+            echo "DEBUG: Coverage delta: ${COV_DELTA}%, branches delta: ${BR_DELTA}%"
+
+            IFS='|' read -r COV_DELTA_STR COV_DELTA_EMOJI <<< "$(format_delta "$COV_DELTA")"
+            IFS='|' read -r BR_DELTA_STR BR_DELTA_EMOJI <<< "$(format_delta "$BR_DELTA")"
+
+            HAS_DELTA=true
+          fi
+        else
+          echo "No base branch coverage artifact found"
+        fi
+
+        # Determine badge colors
+        COV_COLOR=$(get_color "$COVERAGE")
+        BR_COLOR=$(get_color "$BRANCHES")
+
+        # Build coverage table with or without deltas
+        if [ "$HAS_DELTA" = "true" ]; then
+          COVERAGE_TABLE="| Metric | Coverage | Change |
+        |--------|----------|--------|
+        | **Instructions** | ![coverage](https://img.shields.io/badge/coverage-${COVERAGE}%25-${COV_COLOR}) **${COVERAGE}%** | ${COV_DELTA_EMOJI} **${COV_DELTA_STR}** |
+        | **Branches** | ![branches](https://img.shields.io/badge/branches-${BRANCHES}%25-${BR_COLOR}) **${BRANCHES}%** | ${BR_DELTA_EMOJI} **${BR_DELTA_STR}** |"
+        else
+          COVERAGE_TABLE="| Metric | Coverage |
+        |--------|----------|
+        | **Instructions** | ![coverage](https://img.shields.io/badge/coverage-${COVERAGE}%25-${COV_COLOR}) **${COVERAGE}%** |
+        | **Branches** | ![branches](https://img.shields.io/badge/branches-${BRANCHES}%25-${BR_COLOR}) **${BRANCHES}%** |"
+        fi
+
+        COMMENT_BODY="## :chart_with_upwards_trend: Overall Code Coverage
+
+        $COVERAGE_TABLE
+
+        > Overall project coverage from JaCoCo test results. Change values compare against the latest base branch build.
+
+        <!-- jacoco-coverage-comment -->"
+
+        # Save comment for the workflow_run
+        mkdir -p pr-comment
+        echo "${{ github.event.pull_request.number }}" > pr-comment/pr-number.txt
+        echo "$COMMENT_BODY" > pr-comment/comment-body.txt
+    - name: Upload PR comment
+      if: ${{ matrix.release_build && github.event_name == 'pull_request' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: pr-comment
+        path: pr-comment/
+        retention-days: 1
+
+    name: build [${{ matrix.expander_leg }}]
+    timeout-minutes: 150
